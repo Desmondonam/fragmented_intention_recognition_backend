@@ -2,5 +2,3 @@ venv
 venv/
 .venv/
 .venv
-
-mtl_model.pt
