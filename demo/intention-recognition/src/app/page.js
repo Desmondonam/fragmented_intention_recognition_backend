@@ -1,3 +1,11 @@
+"use client";
+
+import IntentionRecognition from "@/components/IntentionRecognition";
+
+export default function Home() {
+  return <IntentionRecognition />;
+}
+
 // import Image from "next/image";
 // import styles from "./page.module.css";
 
@@ -66,10 +74,3 @@
 // }
 
 
-"use client";
-
-import IntentionRecognition from "@/components/IntentionRecognition";
-
-export default function Home() {
-  return <IntentionRecognition />;
-}
