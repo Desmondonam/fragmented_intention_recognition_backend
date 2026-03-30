@@ -1,5 +1,11 @@
 venv
+<<<<<<< HEAD
 .venv
 venv/
 .venv/
 checkpoints/
+=======
+venv/
+.venv/
+.venv
+>>>>>>> e3a6984fc0dce45bb34aa4fadd26039b5c2ab738
