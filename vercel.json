@@ -1,8 +1,7 @@
 {
   "version": 2,
   "name": "mtl-intent-emotion-ui",
-  "rootDirectory": "demo/intention-recognition",
-  "buildCommand": "npm run build",
+"buildCommand": "npm run build",
   "outputDirectory": ".next",
   "framework": "nextjs",
   "env": {
