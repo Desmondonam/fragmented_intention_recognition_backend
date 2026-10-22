@@ -1,6 +1,21 @@
-venv
-.venv
-venv/
+# Python
+__pycache__/
+*.py[cod]
 .venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Model artifacts — weights live on the Hugging Face Hub, never in git
 checkpoints/
+*.pt
+*.safetensors
+*.bin
+
+# Local data / experiment output
+data_cache/
+runs/
+
+# Node
 node_modules/
+.next/
