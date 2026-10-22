@@ -1,0 +1,9 @@
+.git
+.venv
+venv
+frontend
+checkpoints
+runs
+data_cache
+tests
+**/__pycache__

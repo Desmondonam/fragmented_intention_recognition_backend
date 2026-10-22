@@ -1,75 +1,50 @@
 """
-FastAPI Application — MTL Intent & Emotion Demo
-================================================
+FastAPI Application — Intent & Emotion Escalation API
+=====================================================
 Endpoints:
   POST /analyze        → Run inference on a single utterance
-  POST /session/reset  → Reset conversation state
+  POST /session/reset  → Reset a conversation's state
   GET  /health         → Health check
   GET  /labels         → Return all known intent/emotion labels
+
+Configuration (environment variables):
+  MODEL_DIR / MODEL_REPO_ID / MODEL_REVISION   see app/model_store.py
+  ALLOWED_ORIGINS     comma-separated CORS origins (default "*")
+  TOP_K_INTENTS       number of intents returned (default 3)
+  W_INTENT, W_EMOTION, THRESHOLD_REVIEW, THRESHOLD_ESCALATE   escalation tuning
 """
 
-import time
 import logging
+import os
+import time
 from contextlib import asynccontextmanager
+from typing import Callable, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# Local imports
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from model.mtl_model import MTLIntentEmotionModel, INTENT_LABELS, EMOTION_LABELS
 from app.inference import MTLInferencePipeline
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────
-# App Startup: Load Model Once
-# ─────────────────────────────────────────────
 
-pipeline: MTLInferencePipeline = None  # type: ignore
+def load_pipeline_from_env() -> MTLInferencePipeline:
+    from app.model_store import load_model_and_tokenizer, resolve_model_dir
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global pipeline
-    logger.info("Loading MTL model...")
-
-    model = MTLIntentEmotionModel(
-        encoder_name="roberta-base",
-        freeze_encoder_layers=8,
-    )
-    pipeline = MTLInferencePipeline(
+    model, tokenizer = load_model_and_tokenizer(resolve_model_dir())
+    return MTLInferencePipeline(
         model=model,
-        encoder_name="roberta-base",
-        intent_threshold=0.35,
+        tokenizer=tokenizer,
+        top_k_intents=int(os.getenv("TOP_K_INTENTS", "3")),
         escalation_weights={
-            "w_intent": 0.4,
-            "w_emotion": 0.6,
-            "threshold_review": 0.4,
-            "threshold_escalate": 0.7,
+            "w_intent": float(os.getenv("W_INTENT", "0.4")),
+            "w_emotion": float(os.getenv("W_EMOTION", "0.6")),
+            "threshold_review": float(os.getenv("THRESHOLD_REVIEW", "0.4")),
+            "threshold_escalate": float(os.getenv("THRESHOLD_ESCALATE", "0.7")),
         },
     )
-    logger.info(f"Model loaded. Device: {pipeline.device}")
-    yield
-    logger.info("Shutting down.")
-
-
-app = FastAPI(
-    title="MTL Intent & Emotion API",
-    description="Multi-Task Learning demo: Joint Intent Recognition + Emotion-Aware Escalation",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 # ─────────────────────────────────────────────
@@ -77,7 +52,12 @@ app.add_middleware(
 # ─────────────────────────────────────────────
 
 class AnalyzeRequest(BaseModel):
-    text: str = Field(..., min_length=1, max_length=512, example="I've been waiting for 30 minutes — this is ridiculous, I need to cancel my card NOW!")
+    text: str = Field(..., min_length=1, max_length=512,
+                      examples=["My card was stolen and someone is using it — I need it blocked NOW!"])
+    session_id: str = Field("default", min_length=1, max_length=64)
+
+class ResetRequest(BaseModel):
+    session_id: str = Field("default", min_length=1, max_length=64)
 
 class IntentOut(BaseModel):
     label: str
@@ -91,9 +71,11 @@ class EscalationOut(BaseModel):
     urgency_score: float
     action: str
     message: str
+    emotion_drift: bool
 
 class AnalyzeResponse(BaseModel):
     raw_text: str
+    session_id: str
     conversation_turn: int
     intents: list[IntentOut]
     emotion: EmotionOut
@@ -102,58 +84,86 @@ class AnalyzeResponse(BaseModel):
 
 
 # ─────────────────────────────────────────────
-# Endpoints
+# App Factory
 # ─────────────────────────────────────────────
 
-@app.post("/analyze", response_model=AnalyzeResponse, tags=["Inference"])
-async def analyze(request: AnalyzeRequest):
-    """
-    Analyze a user utterance for intents and emotion, then apply
-    the escalation controller to decide how to respond.
-    """
-    if pipeline is None:
-        raise HTTPException(status_code=503, detail="Model not loaded yet.")
+def create_app(pipeline_factory: Callable[[], MTLInferencePipeline] = load_pipeline_from_env) -> FastAPI:
+    """Build the app. Tests pass a factory that returns a lightweight pipeline."""
 
-    t0 = time.perf_counter()
-    result = pipeline.predict(request.text)
-    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        logger.info("Loading MTL model...")
+        app.state.pipeline = pipeline_factory()
+        logger.info(f"Model loaded. Device: {app.state.pipeline.device}")
+        yield
+        logger.info("Shutting down.")
 
-    return AnalyzeResponse(
-        raw_text=result.raw_text,
-        conversation_turn=result.conversation_turn,
-        intents=[IntentOut(label=i.label, probability=i.probability) for i in result.intents],
-        emotion=EmotionOut(label=result.emotion.label, probability=result.emotion.probability),
-        escalation=EscalationOut(
-            urgency_score=result.escalation.urgency_score,
-            action=result.escalation.action,
-            message=result.escalation.message,
-        ),
-        latency_ms=latency_ms,
+    app = FastAPI(
+        title="Intent & Emotion Escalation API",
+        description="Multi-task RoBERTa: Banking77 intent + GoEmotions emotion, with emotion-aware escalation",
+        version="2.0.0",
+        lifespan=lifespan,
+    )
+    app.state.pipeline = None
+
+    origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
     )
 
+    def get_pipeline(request: Request) -> MTLInferencePipeline:
+        pipeline: Optional[MTLInferencePipeline] = request.app.state.pipeline
+        if pipeline is None:
+            raise HTTPException(status_code=503, detail="Model not loaded yet.")
+        return pipeline
 
-@app.post("/session/reset", tags=["Session"])
-async def reset_session():
-    """Reset conversation state (emotion history, turn counter)."""
-    if pipeline is None:
-        raise HTTPException(status_code=503, detail="Model not loaded yet.")
-    pipeline.reset_session()
-    return {"status": "ok", "message": "Session reset."}
+    @app.post("/analyze", response_model=AnalyzeResponse, tags=["Inference"])
+    def analyze(body: AnalyzeRequest, request: Request):
+        """
+        Analyze a user utterance for intent and emotion, then apply
+        the escalation controller to decide how to respond.
+        """
+        pipeline = get_pipeline(request)
+        t0 = time.perf_counter()
+        result = pipeline.predict(body.text, session_id=body.session_id)
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+        return AnalyzeResponse(
+            raw_text=result.raw_text,
+            session_id=result.session_id,
+            conversation_turn=result.conversation_turn,
+            intents=[IntentOut(label=i.label, probability=i.probability) for i in result.intents],
+            emotion=EmotionOut(label=result.emotion.label, probability=result.emotion.probability),
+            escalation=EscalationOut(**result.escalation.__dict__),
+            latency_ms=latency_ms,
+        )
+
+    @app.post("/session/reset", tags=["Session"])
+    def reset_session(request: Request, body: Optional[ResetRequest] = None):
+        """Reset a conversation's state (emotion history, turn counter)."""
+        session_id = body.session_id if body else "default"
+        get_pipeline(request).reset_session(session_id)
+        return {"status": "ok", "session_id": session_id}
+
+    @app.get("/labels", tags=["Meta"])
+    def get_labels(request: Request):
+        """Return all supported intent and emotion labels."""
+        pipeline = get_pipeline(request)
+        return {"intents": pipeline.intent_labels, "emotions": pipeline.emotion_labels}
+
+    @app.get("/health", tags=["Meta"])
+    def health(request: Request):
+        pipeline = request.app.state.pipeline
+        return {
+            "status": "healthy",
+            "model_loaded": pipeline is not None,
+            "device": pipeline.device if pipeline else None,
+        }
+
+    return app
 
 
-@app.get("/labels", tags=["Meta"])
-async def get_labels():
-    """Return all supported intent and emotion labels."""
-    return {
-        "intents": INTENT_LABELS,
-        "emotions": EMOTION_LABELS,
-    }
-
-
-@app.get("/health", tags=["Meta"])
-async def health():
-    return {
-        "status": "healthy",
-        "model_loaded": pipeline is not None,
-        "device": pipeline.device if pipeline else None,
-    }
+app = create_app()

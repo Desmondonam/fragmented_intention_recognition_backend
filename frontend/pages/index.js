@@ -14,12 +14,21 @@ const PRESETS = [
 ];
 
 // ── Colour maps ──────────────────────────────────────────────────────────
+// Ekman emotions predicted by the model (GoEmotions folded to 7 classes)
 const EMOTION_COLORS = {
-  Neutral:     '#00e5ff',
-  Frustration: '#ff3d5a',
-  Sarcasm:     '#ffd600',
-  Urgent:      '#ff6b35',
+  neutral:  '#00e5ff',
+  joy:      '#00ff88',
+  surprise: '#b388ff',
+  sadness:  '#5c8dff',
+  fear:     '#ff6b35',
+  disgust:  '#ffd600',
+  anger:    '#ff3d5a',
 };
+
+// One conversation per browser tab, so concurrent visitors don't share state
+function newSessionId() {
+  return Math.random().toString(36).slice(2, 12);
+}
 
 const ACTION_CONFIG = {
   autonomous:      { label: 'AUTONOMOUS',      color: '#00ff88', bg: 'rgba(0,255,136,0.08)' },
@@ -103,6 +112,7 @@ export default function Home() {
   const [error, setError] = useState(null);
   const [apiStatus, setApiStatus] = useState('checking'); // 'checking' | 'online' | 'offline'
   const textareaRef = useRef(null);
+  const sessionId = useRef(newSessionId());
 
   // ── Check API health on mount ──────────────────────────────────────────
   useEffect(() => {
@@ -121,7 +131,7 @@ export default function Home() {
       const res = await fetch(`${API_URL}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.trim() }),
+        body: JSON.stringify({ text: text.trim(), session_id: sessionId.current }),
       });
 
       if (!res.ok) {
@@ -141,7 +151,11 @@ export default function Home() {
   }
 
   async function handleReset() {
-    await fetch(`${API_URL}/session/reset`, { method: 'POST' }).catch(() => {});
+    await fetch(`${API_URL}/session/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId.current }),
+    }).catch(() => {});
     setHistory([]);
     setResult(null);
     setError(null);
@@ -246,18 +260,15 @@ export default function Home() {
 
                 {/* Intents */}
                 <div className={styles.section}>
-                  <div className={styles.sectionTitle}>DETECTED INTENTS <span className={styles.sectionNote}>(multi-label · sigmoid)</span></div>
-                  {result.intents.length > 0
-                    ? result.intents.map(i => (
-                        <ProbBar key={i.label} value={i.probability} color="var(--accent-cyan)" label={i.label} />
-                      ))
-                    : <p className={styles.emptyNote}>No intents above threshold.</p>
-                  }
+                  <div className={styles.sectionTitle}>TOP INTENTS <span className={styles.sectionNote}>(Banking77 · softmax)</span></div>
+                  {result.intents.map(i => (
+                    <ProbBar key={i.label} value={i.probability} color="var(--accent-cyan)" label={i.label} />
+                  ))}
                 </div>
 
                 {/* Emotion */}
                 <div className={styles.section}>
-                  <div className={styles.sectionTitle}>EMOTION STATE <span className={styles.sectionNote}>(softmax)</span></div>
+                  <div className={styles.sectionTitle}>EMOTION STATE <span className={styles.sectionNote}>(Ekman · softmax)</span></div>
                   <ProbBar
                     value={result.emotion.probability}
                     color={emotionColor}

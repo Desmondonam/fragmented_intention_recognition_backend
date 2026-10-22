@@ -5,13 +5,15 @@ Handles tokenization, model inference, urgency scoring,
 and escalation decision logic.
 """
 
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional
-from model.mtl_model import MTLIntentEmotionModel, INTENT_LABELS, EMOTION_LABELS
 
+from model.mtl_model import MTLIntentEmotionModel
 
 # ─────────────────────────────────────────────
 # Data Classes
@@ -32,6 +34,7 @@ class EscalationDecision:
     urgency_score: float
     action: str          # "autonomous" | "flag_for_review" | "escalate_now"
     message: str         # Bot response message
+    emotion_drift: bool = False
 
 @dataclass
 class InferenceResult:
@@ -40,17 +43,34 @@ class InferenceResult:
     emotion: EmotionResult
     escalation: EscalationDecision
     conversation_turn: int = 0
+    session_id: str = "default"
 
 
 # ─────────────────────────────────────────────
 # Escalation Controller
 # ─────────────────────────────────────────────
 
-# Which intents are "high complexity / high value" for intent scoring
-HIGH_VALUE_INTENTS = {"report_theft", "request_emergency_cash", "speak_to_agent"}
+# Banking77 intents that signal fraud, loss of funds or loss of access —
+# the requests where a mishandled bot reply is most costly.
+HIGH_VALUE_INTENTS = {
+    "lost_or_stolen_card",
+    "lost_or_stolen_phone",
+    "compromised_card",
+    "card_swallowed",
+    "card_payment_not_recognised",
+    "cash_withdrawal_not_recognised",
+    "direct_debit_payment_not_recognised",
+    "transaction_charged_twice",
+    "wrong_amount_of_cash_received",
+    "transfer_not_received_by_recipient",
+    "pin_blocked",
+}
 
-# Which emotions drive urgency
-HIGH_URGENCY_EMOTIONS = {"Frustration", "Sarcasm", "Urgent"}
+# Ekman emotions that drive urgency
+HIGH_URGENCY_EMOTIONS = {"anger", "disgust", "fear", "sadness"}
+
+DRIFT_WINDOW = 3
+DRIFT_BOOST = 0.15
 
 
 class EscalationController:
@@ -58,7 +78,11 @@ class EscalationController:
     Computes the Urgency Score:
         U = (w_i * P_intent) + (w_e * P_emotion)
 
-    and maps it to an action tier.
+    where P_intent is the probability mass the model puts on high-value
+    intents and P_emotion the mass on high-urgency emotions. Using the full
+    distribution (rather than only the argmax label) keeps U stable when the
+    model is split between two related classes, e.g. compromised_card vs
+    lost_or_stolen_card.
     """
 
     def __init__(
@@ -73,23 +97,26 @@ class EscalationController:
         self.threshold_review = threshold_review
         self.threshold_escalate = threshold_escalate
 
-    def compute_p_intent(self, intents: List[IntentResult]) -> float:
-        """
-        P_intent = max probability among high-value intents that fired.
-        If none fired, use 0.
-        """
-        high_value_probs = [i.probability for i in intents if i.label in HIGH_VALUE_INTENTS]
-        return max(high_value_probs) if high_value_probs else 0.0
+    @staticmethod
+    def compute_p_intent(intent_probs: Dict[str, float]) -> float:
+        return sum(p for label, p in intent_probs.items() if label in HIGH_VALUE_INTENTS)
 
-    def compute_p_emotion(self, emotion: EmotionResult) -> float:
-        """
-        P_emotion = emotion probability if it's a high-urgency emotion, else 0.
-        """
-        return emotion.probability if emotion.label in HIGH_URGENCY_EMOTIONS else 0.0
+    @staticmethod
+    def compute_p_emotion(emotion_probs: Dict[str, float]) -> float:
+        return sum(p for label, p in emotion_probs.items() if label in HIGH_URGENCY_EMOTIONS)
 
-    def decide(self, intents: List[IntentResult], emotion: EmotionResult) -> EscalationDecision:
-        p_i = self.compute_p_intent(intents)
-        p_e = self.compute_p_emotion(emotion)
+    def decide(
+        self,
+        intent_probs: Dict[str, float],
+        emotion_probs: Dict[str, float],
+        emotion_drift: bool = False,
+    ) -> EscalationDecision:
+        p_i = self.compute_p_intent(intent_probs)
+        p_e = self.compute_p_emotion(emotion_probs)
+        # Persistent negative emotion across turns raises urgency even when
+        # each individual turn is borderline.
+        if emotion_drift:
+            p_e = min(p_e + DRIFT_BOOST, 1.0)
 
         U = (self.w_intent * p_i) + (self.w_emotion * p_e)
         U = round(min(U, 1.0), 4)
@@ -110,7 +137,44 @@ class EscalationController:
             action = "autonomous"
             message = "Got it — I can help you with that right away."
 
-        return EscalationDecision(urgency_score=U, action=action, message=message)
+        return EscalationDecision(urgency_score=U, action=action, message=message, emotion_drift=emotion_drift)
+
+
+# ─────────────────────────────────────────────
+# Per-session conversation state
+# ─────────────────────────────────────────────
+
+@dataclass
+class SessionState:
+    turn: int = 0
+    emotion_history: List[str] = field(default_factory=list)
+
+    def has_emotion_drift(self) -> bool:
+        """True if the last DRIFT_WINDOW turns were all high-urgency emotions."""
+        recent = self.emotion_history[-DRIFT_WINDOW:]
+        return len(recent) == DRIFT_WINDOW and all(e in HIGH_URGENCY_EMOTIONS for e in recent)
+
+
+class SessionStore:
+    """In-memory LRU of conversation state, bounded so memory can't grow without limit."""
+
+    def __init__(self, max_sessions: int = 10_000):
+        self.max_sessions = max_sessions
+        self._sessions: "OrderedDict[str, SessionState]" = OrderedDict()
+        # FastAPI runs sync endpoints in a threadpool, so guard the dict.
+        self._lock = threading.Lock()
+
+    def get(self, session_id: str) -> SessionState:
+        with self._lock:
+            state = self._sessions.pop(session_id, None) or SessionState()
+            self._sessions[session_id] = state
+            if len(self._sessions) > self.max_sessions:
+                self._sessions.popitem(last=False)
+            return state
+
+    def reset(self, session_id: str):
+        with self._lock:
+            self._sessions.pop(session_id, None)
 
 
 # ─────────────────────────────────────────────
@@ -125,89 +189,57 @@ class MTLInferencePipeline:
     def __init__(
         self,
         model: MTLIntentEmotionModel,
-        encoder_name: str = "roberta-base",
-        intent_threshold: float = 0.35,  # Sigmoid threshold for multi-label intents
+        tokenizer,
+        top_k_intents: int = 3,
         device: Optional[str] = None,
         escalation_weights: Optional[Dict] = None,
+        max_length: int = 64,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.model.eval()
 
-        self.tokenizer = AutoTokenizer.from_pretrained(encoder_name)
-        self.intent_threshold = intent_threshold
+        self.tokenizer = tokenizer
+        self.top_k_intents = top_k_intents
+        self.max_length = max_length
+        self.intent_labels = model.intent_labels
+        self.emotion_labels = model.emotion_labels
 
-        esc_kwargs = escalation_weights or {}
-        self.escalation_controller = EscalationController(**esc_kwargs)
-
-        # Track emotion history for multi-turn drift detection
-        self._turn_counter: int = 0
-        self._emotion_history: List[str] = []
+        self.escalation_controller = EscalationController(**(escalation_weights or {}))
+        self.sessions = SessionStore()
 
     def _tokenize(self, text: str) -> Dict[str, torch.Tensor]:
-        encoded = self.tokenizer(
-            text,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=128,
-        )
-        return {k: v.to(self.device) for k, v in encoded.items()}
-
-    def _decode_intents(self, logits: torch.Tensor) -> List[IntentResult]:
-        probs = torch.sigmoid(logits).squeeze(0).tolist()
-        results = [
-            IntentResult(label=label, probability=round(p, 4))
-            for label, p in zip(INTENT_LABELS, probs)
-            if p >= self.intent_threshold
-        ]
-        # Sort descending by probability
-        return sorted(results, key=lambda x: x.probability, reverse=True)
-
-    def _decode_emotion(self, logits: torch.Tensor) -> EmotionResult:
-        probs = F.softmax(logits.squeeze(0), dim=-1).tolist()
-        max_idx = probs.index(max(probs))
-        return EmotionResult(
-            label=EMOTION_LABELS[max_idx],
-            probability=round(probs[max_idx], 4),
-        )
-
-    def _check_emotion_drift(self) -> bool:
-        """
-        Returns True if the last 3 turns have all been high-urgency.
-        This lets us escalate even when a single turn's score is borderline.
-        """
-        if len(self._emotion_history) < 3:
-            return False
-        return all(e in HIGH_URGENCY_EMOTIONS for e in self._emotion_history[-3:])
+        encoded = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=self.max_length)
+        return {k: encoded[k].to(self.device) for k in ("input_ids", "attention_mask")}
 
     @torch.no_grad()
-    def predict(self, text: str) -> InferenceResult:
-        self._turn_counter += 1
-        inputs = self._tokenize(text)
+    def predict(self, text: str, session_id: str = "default") -> InferenceResult:
+        state = self.sessions.get(session_id)
+        state.turn += 1
 
-        intent_logits, emotion_logits = self.model(**inputs)
+        intent_logits, emotion_logits = self.model(**self._tokenize(text))
+        intent_probs = dict(zip(self.intent_labels, F.softmax(intent_logits[0], dim=-1).tolist(), strict=True))
+        emotion_probs = dict(zip(self.emotion_labels, F.softmax(emotion_logits[0], dim=-1).tolist(), strict=True))
 
-        intents = self._decode_intents(intent_logits)
-        emotion = self._decode_emotion(emotion_logits)
+        top_intents = sorted(intent_probs.items(), key=lambda kv: kv[1], reverse=True)[: self.top_k_intents]
+        intents = [IntentResult(label=k, probability=round(p, 4)) for k, p in top_intents]
+        emotion_label = max(emotion_probs, key=emotion_probs.get)
+        emotion = EmotionResult(label=emotion_label, probability=round(emotion_probs[emotion_label], 4))
 
-        self._emotion_history.append(emotion.label)
-
-        # Boost urgency if persistent negative emotion drift
-        if self._check_emotion_drift():
-            emotion = EmotionResult(label=emotion.label, probability=min(emotion.probability + 0.15, 1.0))
-
-        escalation = self.escalation_controller.decide(intents, emotion)
+        state.emotion_history.append(emotion_label)
+        escalation = self.escalation_controller.decide(
+            intent_probs, emotion_probs, emotion_drift=state.has_emotion_drift()
+        )
 
         return InferenceResult(
             raw_text=text,
             intents=intents,
             emotion=emotion,
             escalation=escalation,
-            conversation_turn=self._turn_counter,
+            conversation_turn=state.turn,
+            session_id=session_id,
         )
 
-    def reset_session(self):
-        """Call this when a new user session starts."""
-        self._turn_counter = 0
-        self._emotion_history = []
+    def reset_session(self, session_id: str = "default"):
+        """Call this when a user session ends or restarts."""
+        self.sessions.reset(session_id)
