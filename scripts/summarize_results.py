@@ -35,13 +35,11 @@ def main():
         f"Test sets: {test_sizes}. Encoder `{a['encoder']}`, embeddings + bottom {a['freeze_layers']} layers "
         f"frozen, {a['max_train_per_task']} train examples/task, {a['epochs']} epochs, lr {a['lr']}, "
         f"batch {a['batch_size']}, seed {a['seed']}. Best epoch chosen on validation macro-F1.",
-        f"Training time (CPU): multi-task {mtl['train_minutes']} min, single-task intent "
-        f"{stl['intent']['train_minutes']} min, single-task emotion {stl['emotion']['train_minutes']} min.",
     ]
     table = "\n".join(lines + footer) + "\n"
     with open(os.path.join(RESULTS_DIR, "RESULTS.md"), "w", encoding="utf-8") as f:
         f.write(table)
-    print(table)
+    print(table.encode("ascii", "replace").decode())  # Windows consoles choke on Δ / →
 
 
 if __name__ == "__main__":

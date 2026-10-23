@@ -1,0 +1,72 @@
+{
+  "tasks": [
+    "emotion"
+  ],
+  "args": {
+    "tasks": "emotion",
+    "encoder": "distilroberta-base",
+    "epochs": 3,
+    "batch_size": 32,
+    "eval_batch_size": 128,
+    "lr": 5e-05,
+    "freeze_layers": 3,
+    "max_length": 64,
+    "max_train_per_task": 9000,
+    "max_eval_per_task": null,
+    "seed": 42,
+    "threads": null,
+    "log_every": 50,
+    "output_dir": "runs/stl_emotion"
+  },
+  "best_epoch": 3,
+  "test": {
+    "emotion": {
+      "accuracy": 0.6826,
+      "macro_f1": 0.5928,
+      "n": 4968
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": {
+        "emotion": 1.1821
+      },
+      "validation": {
+        "emotion": {
+          "accuracy": 0.6575,
+          "macro_f1": 0.4387,
+          "n": 4946
+        }
+      }
+    },
+    {
+      "epoch": 2,
+      "train_loss": {
+        "emotion": 0.8598
+      },
+      "validation": {
+        "emotion": {
+          "accuracy": 0.6777,
+          "macro_f1": 0.5646,
+          "n": 4946
+        }
+      }
+    },
+    {
+      "epoch": 3,
+      "train_loss": {
+        "emotion": 0.7539
+      },
+      "validation": {
+        "emotion": {
+          "accuracy": 0.6941,
+          "macro_f1": 0.5957,
+          "n": 4946
+        }
+      }
+    }
+  ],
+  "train_minutes": 66.5,
+  "device": "cpu"
+}

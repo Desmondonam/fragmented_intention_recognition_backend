@@ -1,0 +1,96 @@
+{
+  "tasks": [
+    "intent",
+    "emotion"
+  ],
+  "args": {
+    "tasks": "intent,emotion",
+    "encoder": "distilroberta-base",
+    "epochs": 3,
+    "batch_size": 32,
+    "eval_batch_size": 128,
+    "lr": 5e-05,
+    "freeze_layers": 3,
+    "max_length": 64,
+    "max_train_per_task": 9000,
+    "max_eval_per_task": null,
+    "seed": 42,
+    "threads": null,
+    "log_every": 50,
+    "output_dir": "runs/mtl"
+  },
+  "best_epoch": 3,
+  "test": {
+    "intent": {
+      "accuracy": 0.8714,
+      "macro_f1": 0.8687,
+      "n": 3080
+    },
+    "emotion": {
+      "accuracy": 0.6739,
+      "macro_f1": 0.5641,
+      "n": 4968
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": {
+        "intent": 3.2349,
+        "emotion": 1.1705
+      },
+      "validation": {
+        "intent": {
+          "accuracy": 0.7333,
+          "macro_f1": 0.6732,
+          "n": 1001
+        },
+        "emotion": {
+          "accuracy": 0.6518,
+          "macro_f1": 0.4302,
+          "n": 4946
+        }
+      }
+    },
+    {
+      "epoch": 2,
+      "train_loss": {
+        "intent": 1.3737,
+        "emotion": 0.8618
+      },
+      "validation": {
+        "intent": {
+          "accuracy": 0.8322,
+          "macro_f1": 0.8039,
+          "n": 1001
+        },
+        "emotion": {
+          "accuracy": 0.6854,
+          "macro_f1": 0.5479,
+          "n": 4946
+        }
+      }
+    },
+    {
+      "epoch": 3,
+      "train_loss": {
+        "intent": 0.8544,
+        "emotion": 0.7585
+      },
+      "validation": {
+        "intent": {
+          "accuracy": 0.8641,
+          "macro_f1": 0.8462,
+          "n": 1001
+        },
+        "emotion": {
+          "accuracy": 0.6852,
+          "macro_f1": 0.5698,
+          "n": 4946
+        }
+      }
+    }
+  ],
+  "train_minutes": 148.4,
+  "device": "cpu"
+}
