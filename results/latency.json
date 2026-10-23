@@ -1,0 +1,42 @@
+{
+  "model": {
+    "p50_ms": 51.8,
+    "p95_ms": 119.7,
+    "p99_ms": 224.9,
+    "mean_ms": 60.9,
+    "max_ms": 402.9,
+    "n": 500
+  },
+  "http": {
+    "p50_ms": 53.6,
+    "p95_ms": 107.0,
+    "p99_ms": 276.0,
+    "mean_ms": 63.1,
+    "max_ms": 395.3,
+    "n": 500
+  },
+  "encoder": "distilroberta-base",
+  "device": "cpu",
+  "torch_threads": 4,
+  "cpu": "Intel64 Family 6 Model 142 Stepping 12, GenuineIntel",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "torch": "2.14.1+cpu",
+  "serving": {
+    "one_multitask_model": {
+      "p50_ms": 48.0,
+      "p95_ms": 116.3,
+      "p99_ms": 222.3,
+      "mean_ms": 58.7,
+      "max_ms": 369.2,
+      "n": 500
+    },
+    "two_single_task_models": {
+      "p50_ms": 96.5,
+      "p95_ms": 214.5,
+      "p99_ms": 482.5,
+      "mean_ms": 115.2,
+      "max_ms": 671.5,
+      "n": 500
+    }
+  }
+}
